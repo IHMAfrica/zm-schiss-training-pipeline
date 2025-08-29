@@ -1,0 +1,111 @@
+services:
+  # ---------- Kafka (single-broker, KRaft) ----------
+  zbx-kafka:
+    image: bitnami/kafka:3.7
+    container_name: zbx-kafka
+    environment:
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://zbx-kafka:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@zbx-kafka:9093"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    ports:
+      - "9094:9092"   # host port 9094 -> container 9092 (avoids collision with other stacks)
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ---------- Flink session cluster ----------
+  zbx-jobmanager:
+    build:
+      context: ./flink
+    image: zbx-flink:1.19
+    container_name: zbx-jobmanager
+    command: jobmanager
+    env_file:
+      - ./.env
+    environment:
+      FLINK_PROPERTIES: "jobmanager.rpc.address: zbx-jobmanager"
+    ports:
+      - "8083:8081"   # host 8083 -> JM UI (avoid collision with other stacks)
+    depends_on:
+      zbx-kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  zbx-taskmanager:
+    image: zbx-flink:1.19
+    container_name: zbx-taskmanager
+    command: taskmanager
+    env_file:
+      - ./.env
+    environment:
+      FLINK_PROPERTIES: "jobmanager.rpc.address: zbx-jobmanager"
+      TASK_MANAGER_NUMBER_OF_TASK_SLOTS: "2"
+    depends_on:
+      - zbx-jobmanager
+    restart: unless-stopped
+
+  # Auto-submit the PyFlink job
+  zbx-flink-submit:
+    image: zbx-flink:1.19
+    container_name: zbx-flink-submit
+    env_file:
+      - ./.env
+    depends_on:
+      - zbx-jobmanager
+    entrypoint: ["/bin/bash","-lc"]
+    command: >
+      set -e
+      && until curl -fsS http://zbx-jobmanager:8081; do echo 'Waiting for Flink JM...'; sleep 3; done
+      && /opt/flink/bin/flink run -d -py /opt/jobs/flink_job.py
+    restart: "on-failure"
+
+  # ---------- Producer: MySQL (Zabbix) -> Kafka RAW_TOPIC ----------
+  zbx-producer:
+    build:
+      context: ./producer
+    container_name: zbx-mysql-producer
+    env_file:
+      - ./.env
+    environment:
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      KAFKA_BROKER: ${KAFKA_BROKER:-zbx-kafka:9092}
+    depends_on:
+      zbx-kafka:
+        condition: service_healthy
+    secrets:
+      - mysql_password
+    restart: unless-stopped
+
+  # ---------- Consumer: Kafka CURATED_TOPIC -> Postgres ----------
+  zbx-consumer:
+    build:
+      context: ./consumer
+    container_name: zbx-postgres-consumer
+    env_file:
+      - ./.env
+    environment:
+      PG_PASSWORD_FILE: /run/secrets/pg_password
+      KAFKA_BROKER: ${KAFKA_BROKER:-zbx-kafka:9092}
+    depends_on:
+      zbx-kafka:
+        condition: service_healthy
+    secrets:
+      - pg_password
+    restart: unless-stopped
+
+# ─── Secrets ───────────────────────────────────────────────────────────────────
+secrets:
+  mysql_password:
+    file: ./secrets/mysql_password.txt
+  pg_password:
+    file: ./secrets/pg_password.txt

@@ -1,0 +1,18 @@
+zabbix-sitevisisbility-pipeline/
+├─ docker-compose.yml
+├─ .env
+├─ secrets/                      
+│  ├─ mysql_password.txt
+│  └─ pg_password.txt
+├─ flink/
+│  ├─ Dockerfile
+│  └─ flink_job.py
+├─ producer/
+│  ├─ Dockerfile
+│  ├─ requirements.txt
+│  ├─ mysql_to_kafka.py
+│  └─ query.sql
+└─ consumer/
+   ├─ Dockerfile
+   ├─ requirements.txt
+   └─ kafka_to_postgres.py
