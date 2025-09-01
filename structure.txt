@@ -1,17 +1,17 @@
-zabbix-sitevisisbility-pipeline/
+schiss-training-pipeline/
 ├─ docker-compose.yml
-├─ .env
-├─ secrets/                      
-│  ├─ mysql_password.txt
-│  └─ pg_password.txt
-├─ flink/
-│  ├─ Dockerfile
-│  └─ flink_job.py
+├─ .env.example
+├─ README.md
+├─ sql/
+│  └─ create_capacity_building.sql
 ├─ producer/
 │  ├─ Dockerfile
 │  ├─ requirements.txt
 │  ├─ mysql_to_kafka.py
 │  └─ query.sql
+├─ flink/
+│  ├─ Dockerfile
+│  └─ flink_job.py
 └─ consumer/
    ├─ Dockerfile
    ├─ requirements.txt

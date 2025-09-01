@@ -1,19 +1,4 @@
-# Python
-__pycache__/
-*.py[cod]
 
-# IDE / OS
-.vscode/
-.idea/
-.DS_Store
-
-# Envs & local overrides
-.env
-.env.*
-!.env.example
-
-# Docker secrets folder
 secrets/
 
-# Misc
-*.log
+secrets/
