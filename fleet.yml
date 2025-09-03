@@ -1,0 +1,4 @@
+defaultNamespace: zm-schiss-training
+helm:
+  releaseName: zm-schiss-training
+  chart: ./zm-schiss-training-pipeline-chart

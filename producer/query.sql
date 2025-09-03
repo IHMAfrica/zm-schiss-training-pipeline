@@ -1,94 +1,106 @@
-SELECT 
-    h.hostid,
-    h.name AS host_name,
-    p.eventid,
-    FROM_UNIXTIME(p.clock) AS problem_start,
-    FROM_UNIXTIME(p.r_clock) AS problem_end,
-    TIMESTAMPDIFF(SECOND, FROM_UNIXTIME(p.clock), FROM_UNIXTIME(p.r_clock)) AS problem_duration_seconds,
-    CASE 
-        WHEN p.r_clock = 0 THEN 'Ongoing'
-        ELSE 'Resolved'
-    END AS problem_status,
-    t.description AS trigger_description,
-    t.priority AS severity,
-    s.total_downtime_events,
-    s.uptime_percentage,
-    inf.interfaceid,
-    inf.province,
-    inf.port,
-    inf.available,
-    inf.error,
-    inf.ip,
-    inf.problemstatus,
-    inf.availabilitystatus,
-    inf.avg_signal_strength,
-    inf.signal_strength
-FROM problem p
-JOIN events e ON p.eventid = e.eventid
-JOIN triggers t ON e.objectid = t.triggerid
-JOIN functions f ON t.triggerid = f.triggerid
-JOIN items i ON f.itemid = i.itemid
-JOIN hosts h ON i.hostid = h.hostid
+SELECT
+    r.id AS staffid,
+    CONCAT(r.first_name, ' ', r.last_name) AS fullname,
+    r.reg_date,
+    r.decision,
+    r.training_type,
+    r.staff_type,
+    r.nrc,
+    r.sex,
+    r.age,
+    r.`role` AS job_role,
+    r.education,
+    r.used_smartcare,
+    r.currently_using,
+    s.stakeholder_name,
+    f.facility_name,
+    pr.province_name,
+    d.district_name,
 
-LEFT JOIN (
-    SELECT 
-        h1.hostid,
-        COUNT(p1.eventid) AS total_downtime_events,
-        CAST(
-            ROUND(
-                (
-                    ((120*24*3600) - COALESCE(SUM(TIMESTAMPDIFF(SECOND, FROM_UNIXTIME(p1.clock), FROM_UNIXTIME(p1.r_clock))),0))
-                    / (120*24*3600)
-                ) * 100, 2
-            ) AS DECIMAL(10,2)
-        ) AS uptime_percentage
-    FROM problem p1
-    JOIN events e1 ON p1.eventid = e1.eventid
-    JOIN triggers t1 ON e1.objectid = t1.triggerid
-    JOIN functions f1 ON t1.triggerid = f1.triggerid
-    JOIN items i1 ON f1.itemid = i1.itemid
-    JOIN hosts h1 ON i1.hostid = h1.hostid
-    WHERE p1.clock >= UNIX_TIMESTAMP(NOW() - INTERVAL 120 DAY)
-      AND p1.r_clock > 0
-    GROUP BY h1.hostid
-) s ON h.hostid = s.hostid
+    /* === Derived columns replacing the UPDATE logic === */
+    CASE
+        WHEN r.reg_date < '2024-10-01' THEN '2024'
+        ELSE '2025'
+    END AS financialyear,
 
-LEFT JOIN (
-    SELECT
-        h2.hostid,
-        i2.interfaceid,
-        hg.name AS province,
-        i2.port,
-        i2.available,
-        i2.error,
-        i2.ip,
-        CASE 
-            WHEN t2.value = 1 THEN 'Active'
-            WHEN t2.value = 0 THEN 'Resolved'
-        END AS problemstatus,
-        CASE 
-            WHEN inter2.available = 0 THEN 'Unknown'
-            WHEN inter2.available = 1 THEN 'Stable'
-            WHEN inter2.available = 2 THEN 'Not Stable'
-        END AS availabilitystatus,
-        tr.value_avg AS avg_signal_strength,
-        CASE 
-            WHEN tr.value_avg > -70 THEN 'Excellent'
-            WHEN tr.value_avg BETWEEN -70 AND -85 THEN 'Good'
-            WHEN tr.value_avg BETWEEN -86 AND -100 THEN 'Fair'
-            WHEN tr.value_avg < -100 THEN 'Poor'
-            WHEN tr.value_avg = -110 THEN 'No Signal'
-        END AS signal_strength
-    FROM hosts AS h2
-    JOIN hosts_groups hg_map ON h2.hostid = hg_map.hostid
-    JOIN hstgrp hg ON hg_map.groupid = hg.groupid
-    JOIN interface i2 ON h2.hostid = i2.hostid
-    JOIN items itm ON h2.hostid = itm.hostid
-    LEFT JOIN trends tr ON itm.itemid = tr.itemid
-    JOIN functions f2 ON itm.itemid = f2.itemid
-    JOIN triggers t2 ON f2.triggerid = t2.triggerid
-    JOIN interface inter2 ON h2.hostid = inter2.hostid
-) inf ON h.hostid = inf.hostid
+    CASE
+        WHEN MONTH(r.reg_date) IN (10,11,12) THEN 'Q1'
+        WHEN MONTH(r.reg_date) IN (1,2,3)     THEN 'Q2'
+        WHEN MONTH(r.reg_date) IN (4,5,6)     THEN 'Q3'
+        WHEN MONTH(r.reg_date) IN (7,8,9)     THEN 'Q4'
+        ELSE NULL
+    END AS quarters,
 
-WHERE p.clock >= UNIX_TIMESTAMP(NOW() - INTERVAL 120 DAY)
-ORDER BY p.clock DESC;
+    CASE UPPER(TRIM(pr.province_name))
+        WHEN 'LUSAKA'        THEN 'LSK'
+        WHEN 'COPPERBELT'    THEN 'CBP'
+        WHEN 'EASTERN'       THEN 'EP'
+        WHEN 'CENTRAL'       THEN 'CP'
+        WHEN 'NORTH-WESTERN' THEN 'NW'
+        WHEN 'MUCHINGA'      THEN 'MP'
+        WHEN 'WESTERN'       THEN 'WP'
+        WHEN 'LUAPULA'       THEN 'LP'
+        WHEN 'SOUTHERN'      THEN 'SP'
+        WHEN 'NORTHERN'      THEN 'NP'
+        ELSE NULL
+    END AS isocode,
+
+    /* === Pre-test (10 questions) === */
+    prt.test_date AS pretestdate,
+      (CASE WHEN prt.question_1  = prt.answer_1  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_2  = prt.answer_2  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_3  = prt.answer_3  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_4  = prt.answer_4  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_5  = prt.answer_5  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_6  = prt.answer_6  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_7  = prt.answer_7  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_8  = prt.answer_8  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_9  = prt.answer_9  THEN 1 ELSE 0 END
+     + CASE WHEN prt.question_10 = prt.answer_10 THEN 1 ELSE 0 END) AS pretestscore,
+
+    /* === Post-test (10 questions) === */
+    pt.test_date AS posttestdate,
+      (CASE WHEN pt.question_1  = pt.answer_1  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_2  = pt.answer_2  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_3  = pt.answer_3  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_4  = pt.answer_4  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_5  = pt.answer_5  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_6  = pt.answer_6  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_7  = pt.answer_7  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_8  = pt.answer_8  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_9  = pt.answer_9  THEN 1 ELSE 0 END
+     + CASE WHEN pt.question_10 = pt.answer_10 THEN 1 ELSE 0 END) AS posttestscore,
+
+    /* === Manager pre-test (8 questions) === */
+    mt.test_date AS mgr_pretestdate,
+      (CASE WHEN mt.question_1 = mt.answer_1 THEN 1 ELSE 0 END
+     + CASE WHEN mt.question_2 = mt.answer_2 THEN 1 ELSE 0 END
+     + CASE WHEN mt.question_3 = mt.answer_3 THEN 1 ELSE 0 END
+     + CASE WHEN mt.question_4 = mt.answer_4 THEN 1 ELSE 0 END
+     + CASE WHEN mt.question_5 = mt.answer_5 THEN 1 ELSE 0 END
+     + CASE WHEN mt.question_6 = mt.answer_6 THEN 1 ELSE 0 END
+     + CASE WHEN mt.question_7 = mt.answer_7 THEN 1 ELSE 0 END
+     + CASE WHEN mt.question_8 = mt.answer_8 THEN 1 ELSE 0 END) AS mgr_pretestscore,
+
+    /* === Manager post-test (8 questions) === */
+    mpt.test_date AS mgr_posttestdate,
+      (CASE WHEN mpt.question_1 = mpt.answer_1 THEN 1 ELSE 0 END
+     + CASE WHEN mpt.question_2 = mpt.answer_2 THEN 1 ELSE 0 END
+     + CASE WHEN mpt.question_3 = mpt.answer_3 THEN 1 ELSE 0 END
+     + CASE WHEN mpt.question_4 = mpt.answer_4 THEN 1 ELSE 0 END
+     + CASE WHEN mpt.question_5 = mpt.answer_5 THEN 1 ELSE 0 END
+     + CASE WHEN mpt.question_6 = mpt.answer_6 THEN 1 ELSE 0 END
+     + CASE WHEN mpt.question_7 = mpt.answer_7 THEN 1 ELSE 0 END
+     + CASE WHEN mpt.question_8 = mpt.answer_8 THEN 1 ELSE 0 END) AS mgr_posttestscore
+
+FROM registration r
+LEFT JOIN province     pr  ON r.province_id   = pr.id
+LEFT JOIN district     d   ON r.district_id   = d.id
+LEFT JOIN facility     f   ON r.facility_id   = f.id
+LEFT JOIN stakeholders s   ON r.stakeholder_id= s.id
+LEFT JOIN pre_test     prt ON r.id            = prt.id
+LEFT JOIN post_test    pt  ON r.id            = pt.id
+LEFT JOIN manager_test mt  ON r.id            = mt.id
+LEFT JOIN manager_post_test mpt ON r.id       = mpt.id
+ORDER BY r.reg_date ASC
+LIMIT %(limit)s OFFSET %(offset)s;

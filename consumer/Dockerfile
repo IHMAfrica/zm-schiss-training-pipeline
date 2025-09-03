@@ -1,17 +1,16 @@
-# Slim + wheels only; no compiler toolchain needed
 FROM python:3.13-slim
-
 WORKDIR /app
 
-# Keep it tiny but include certs for TLS brokers if needed
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+# Add this line; you can pass --build-arg CACHE_BUST=$(date +%s) to force re-run of pip
+ARG CACHE_BUST=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY kafka_to_postgres.py /app/kafka_to_postgres.py
-
-# Default: run the consumer
+ENV PYTHONUNBUFFERED=1
 CMD ["python", "/app/kafka_to_postgres.py"]

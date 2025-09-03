@@ -1,86 +1,151 @@
-import os, time, json, logging, pathlib
+import os, json, time, logging
 from dotenv import load_dotenv
 import mysql.connector
 from confluent_kafka import Producer
+from confluent_kafka.admin import AdminClient, NewTopic
 
 load_dotenv()
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-def read_secret(path_env: str) -> str:
-    p = os.getenv(path_env)
-    if not p or not pathlib.Path(p).exists():
-        raise RuntimeError(f"Secret file not found for {path_env}: {p}")
-    return pathlib.Path(p).read_text(encoding="utf-8").strip()
+def get_env(name: str, default: str | None = None, required: bool = False) -> str:
+    file_var = os.getenv(f"{name}_FILE")
+    if file_var:
+        with open(file_var, "r", encoding="utf-8") as f:
+            val = f.read().strip()
+            if val:
+                return val
+    val = os.getenv(name, default)
+    if required and (val is None or val == ""):
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return val
 
-def get_mysql_conn():
-    pw = read_secret("MYSQL_PASSWORD_FILE")
-    cnx = mysql.connector.connect(
-        host=os.getenv("MYSQL_HOST", "host.docker.internal"),
-        port=int(os.getenv("MYSQL_PORT", "7070")),
-        database=os.getenv("MYSQL_DB", "zabbix"),
-        user=os.getenv("MYSQL_USER", "superset"),
-        password=pw,
-    )
-    return cnx
+def truthy(v: str | None) -> bool:
+    return str(v).lower() in {"1", "true", "t", "yes", "y", "on"}
 
-def get_kafka_producer():
-    return Producer({
-        "bootstrap.servers": os.getenv("KAFKA_BROKER", "zbx-kafka:9092"),
-        "client.id": "zbx-producer"
-    })
+# ---------- MySQL ----------
+MYSQL_CFG = {
+    "host": get_env("MYSQL_HOST", "host.docker.internal"),
+    "port": int(get_env("MYSQL_PORT", "3306")),
+    "database": get_env("MYSQL_DB", required=True),
+    "user": get_env("MYSQL_USER", required=True),
+    "password": get_env("MYSQL_PASSWORD", default=""),
+}
 
-def delivery_report(err, msg):
-    if err:
-        logging.error(f"Delivery failed: {err}")
-    # else: ok; keep quiet to avoid chatty logs
+QUERY_FILE = os.getenv("MYSQL_QUERY_FILE", "/app/query.sql")
+QUERY = os.getenv("MYSQL_QUERY")  # optional override
+PAGE_SIZE = int(os.getenv("MYSQL_PAGE_SIZE", "5000"))  
+SLEEP_BETWEEN_PAGES = float(os.getenv("MYSQL_PAGE_DELAY_SEC", "0"))  
 
-def produce_once():
-    topic = os.getenv("RAW_TOPIC", "zabbix_raw")
-    batch_size = int(os.getenv("BATCH_SIZE", "1000"))
+# ---------- Kafka ----------
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
+RAW_TOPIC = os.getenv("RAW_TOPIC", "training_raw")
+KAFKA_AUTH_ENABLED = truthy(os.getenv("KAFKA_AUTH_ENABLED", "0"))
 
-    # load SQL
-    with open("/app/query.sql", "r", encoding="utf-8") as f:
-        sql = f.read()
+def build_kafka_client_config() -> dict:
+    cfg = {
+        "bootstrap.servers": KAFKA_BROKER,
+        "client.id": os.getenv("KAFKA_CLIENT_ID", "schiss-producer"),
+        "enable.idempotence": True,
+        "acks": "all",
+        "linger.ms": 25,
+        "batch.num.messages": 10000,
+    }
+    if KAFKA_AUTH_ENABLED:
+        sec = os.getenv("KAFKA_SECURITY_PROTOCOL", "SASL_PLAINTEXT")
+        mech = os.getenv("KAFKA_SASL_MECHANISM", "SCRAM-SHA-256")
+        user = os.getenv("KAFKA_SASL_USERNAME")
+        pwd  = os.getenv("KAFKA_SASL_PASSWORD")
+        cfg["security.protocol"] = sec
+        cfg["sasl.mechanisms"] = mech
+        if user and pwd:
+            cfg["sasl.username"] = user
+            cfg["sasl.password"] = pwd
+        logging.info("Kafka auth enabled: %s, protocol=%s, mechanism=%s", KAFKA_AUTH_ENABLED, sec, mech)
+    else:
+        logging.info("Kafka auth enabled: %s (using PLAINTEXT)", KAFKA_AUTH_ENABLED)
+    return cfg
 
-    cnx = get_mysql_conn()
-    cur = cnx.cursor(dictionary=True)
+def ensure_topic(topic: str, partitions: int = 1, rf: int = 1):
+    admin = AdminClient(build_kafka_client_config())
+    md = admin.list_topics(timeout=10)
+    if topic in md.topics and md.topics[topic].error is None:
+        logging.info("Kafka topic '%s' already exists.", topic)
+        return
+    logging.info("Creating Kafka topic '%s'...", topic)
+    fs = admin.create_topics([NewTopic(topic, num_partitions=partitions, replication_factor=rf)])
+    try:
+        fs[topic].result(15)
+        logging.info("Kafka topic '%s' created.", topic)
+    except Exception as e:
+        if "TOPIC_ALREADY_EXISTS" in str(e):
+            logging.info("Kafka topic '%s' exists (raced).", topic)
+        else:
+            raise
 
-    logging.info("Starting extraction from MySQL...")
-    cur.execute(sql)
+def load_query() -> str:
+    if QUERY and QUERY.strip():
+        return QUERY
+    with open(QUERY_FILE, "r", encoding="utf-8") as f:
+        return f.read()
 
-    p = get_kafka_producer()
-    sent = 0
-
-    while True:
-        rows = cur.fetchmany(batch_size)
-        if not rows:
-            break
-        for r in rows:
-            key = f"{r.get('eventid','')}-{r.get('interfaceid','')}".encode("utf-8")
-            val = json.dumps(r, default=str).encode("utf-8")
-            p.produce(topic=topic, key=key, value=val, callback=delivery_report)
-            sent += 1
-            if sent % 1000 == 0:
-                logging.info(f"Produced {sent} rows so far...")
-        p.flush()
-
-    p.flush(10)
-    cur.close()
-    cnx.close()
-    logging.info(f"Done. Total produced: {sent}")
+def stream_rows_to_kafka(cursor, producer):
+    rows = 0
+    def _delivered(err, msg):
+        if err:
+            logging.error("Delivery failed: %s", err)
+    for row in cursor:
+        producer.poll(0)
+        producer.produce(RAW_TOPIC, json.dumps(row, default=str).encode("utf-8"), callback=_delivered)
+        rows += 1
+        if rows % 1000 == 0:
+            logging.info("Queued %d messages...", rows)
+    producer.flush(60)
+    return rows
 
 def main():
-    one_shot = os.getenv("PRODUCER_ONE_SHOT", "1") == "1"
-    interval = int(os.getenv("POLL_INTERVAL_SEC", "900"))
-    while True:
-        try:
-            produce_once()
-        except Exception as e:
-            logging.exception("Producer iteration failed: %s", e)
-        if one_shot:
-            break
-        time.sleep(interval)
+    ensure_topic(RAW_TOPIC, partitions=1, rf=1)
+
+    logging.info("Connecting to MySQL at %s:%s / db=%s",
+                 MYSQL_CFG["host"], MYSQL_CFG["port"], MYSQL_CFG["database"])
+    conn = mysql.connector.connect(**MYSQL_CFG)
+    cur = conn.cursor(dictionary=True)
+
+    sql = load_query()
+    has_placeholders = ("%(limit)s" in sql) and ("%(offset)s" in sql)
+
+    prod = Producer(build_kafka_client_config())
+
+    logging.info("Running query and streaming to Kafka topic '%s'...", RAW_TOPIC)
+
+    total = 0
+    if has_placeholders:
+        logging.info("Detected LIMIT/OFFSET placeholders -> paginated export (page size: %d)", PAGE_SIZE)
+        offset = 0
+        page = 1
+        while True:
+            params = {"limit": PAGE_SIZE, "offset": offset}
+            cur.execute(sql, params)  
+            sent = stream_rows_to_kafka(cur, prod)
+            total += sent
+            logging.info("Page %d: sent %d rows (total %d)", page, sent, total)
+            if sent < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+            page += 1
+            if SLEEP_BETWEEN_PAGES > 0:
+                time.sleep(SLEEP_BETWEEN_PAGES)
+    else:
+        cur.execute(sql)
+        total = stream_rows_to_kafka(cur, prod)
+
+    logging.info("Finished. Sent %d messages.", total)
+    cur.close()
+    conn.close()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logging.info("Producer stopped by user.")
+    except Exception as e:
+        logging.exception("Producer error: %s", e)
