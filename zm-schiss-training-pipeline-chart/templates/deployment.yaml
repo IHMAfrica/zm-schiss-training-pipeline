@@ -1,0 +1,189 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zm-schiss-training-pipeline-chart.fullname" . }}
+  labels:
+    {{- include "zm-schiss-training-pipeline-chart.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "zm-schiss-training-pipeline-chart.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "zm-schiss-training-pipeline-chart.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "zm-schiss-training-pipeline-chart.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: BATCH_SIZE
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: BATCH_SIZE
+            - name: CONSUMER_GROUP
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: CONSUMER_GROUP
+            - name: CURATED_TOPIC
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: CURATED_TOPIC
+            - name: INIT_SCHEMA
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: INIT_SCHEMA
+            - name: KAFKA_AUTH_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: KAFKA_AUTH_ENABLED
+            - name: KAFKA_BROKER
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: KAFKA_BROKER
+            - name: KAFKA_SASL_JAAS_CONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: KAFKA_SASL_JAAS_CONFIG
+            - name: KAFKA_SASL_MECHANISM
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: KAFKA_SASL_MECHANISM
+            - name: KAFKA_SECURITY_PROTOCOL
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: KAFKA_SECURITY_PROTOCOL
+            - name: MYSQL_DB
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: MYSQL_DB
+            - name: MYSQL_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: MYSQL_HOST
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: MYSQL_PASSWORD
+            - name: MYSQL_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: MYSQL_PORT
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: MYSQL_USER
+            - name: PG_DB
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: PG_DB
+            - name: PG_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: PG_HOST
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: PG_PASSWORD
+            - name: PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: PG_USER
+            - name: POLL_INTERVAL_SEC
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: POLL_INTERVAL_SEC
+            - name: PRODUCER_ONE_SHOT
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: PRODUCER_ONE_SHOT
+            - name: RAW_TOPIC
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: RAW_TOPIC
+            - name: UPSERT_BATCH_SIZE
+              valueFrom:
+                secretKeyRef:
+                  name: s-cjclw
+                  key: UPSERT_BATCH_SIZE
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
